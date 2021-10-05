@@ -1,0 +1,422 @@
+---
+title: "Lista 2 - Mineração de dados"
+author: "Luben, Luiz Piccin, Vinicius Hideki"
+date: "10/4/2021"
+header-includes:
+  - \usepackage{amsmath}
+  - \usepackage{xcolor}
+output: 
+  pdf_document:
+    fig_caption: yes
+    df_print: kable
+latex_engine: texlive
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = T, out.width = '85%', fig.align = "center")
+```
+```{r message = FALSE, include = FALSE}
+# importando os pacotes de interesse
+library(ggplot2)
+library(ggthemes)
+library(ggpubr)
+library(GGally)
+library(ggcorrplot)
+library(reshape2)
+library(tidyverse)
+library(magrittr)
+
+
+# pacotes do lasso, ridge, elastic net, validação e tidyverse
+library(glmnet)
+library(caret)
+library(tidyverse)
+library(magrittr)
+
+# usando o tidymodels
+library(tidymodels)
+```
+# Exercício 1: \
+Podemos implementar a regressão linear local da seguinte maneira:
+```{r}
+# kernel usado
+# escrevendo 3 funcoes de kernel
+# kernel gaussiano
+gauss_kernel = function(x, x_i, h){
+  return(1/sqrt(2*pi*(h^2))*exp(-(x - x_i)^2/(2*h^2)))
+}
+
+# epanechnikov
+epanech_kernel = function(x, x_i, h){
+  return(1 - ((x - x_i)^2/(h^2))*((x - x_i)^2 <= h))
+}
+
+# unifrome
+unif_kernel = function(x, x_i, h){
+  return((x - x_i)^2 <= h)
+}
+
+
+loc_lm = function(x_train, y_train, x_test, h, kernel){
+  # calculando os pesos para cada x_test através do kernel e normalizando o vetor
+  w = lapply(x_test, eval(kernel), x_i = x_train, h = h) %>% unlist() %>% matrix(
+    nrow = length(x_train), ncol = length(x_test))
+  w = sweep(w, 2, colSums(w), FUN = '/')
+  
+  # matriz de covariaveis com relacao a y, levando em conta o intercepto
+  covs = model.matrix(y_train ~ x_train)
+  estims = matrix(ncol = 2, nrow = length(x_test))
+  # computando os estimadores de beta0 e beta1 localmente para cada x do teste
+  for(i in 1:length(x_test)){
+    omega = diag(w[,i])
+    estims[i, ] = solve(t(covs) %*% omega %*% covs) %*% (t(covs) %*% omega %*% y_train)
+  }
+  # retornando as estimativas
+  colnames(estims) = c("beta0", "beta1")
+  return(estims)
+}
+
+fit_loc_lm = function(x, x_train, y_train, h, kernel){
+  estims = loc_lm(x_train, y_train, x, h, kernel)
+  vars = cbind(rep(1, length(x)),
+               x)
+  preds = estims * vars
+  return(rowSums(preds))
+}
+```
+Simulando alguns dados utilizando senos e cossenos para formar um comportamento de onda:
+```{r}
+# conjunto inteiro
+n = 400
+x_all = runif(n, -8, 8)
+y_all = 2.5*cos(x_all) + 2.5*sin(x_all) + x_all + rnorm(n, sd = 1.25)
+
+sim_data = data.frame(X = x_all, Y = y_all)
+```
+Formato do gráfico de dispersão:
+```{r}
+# regressao real
+reg_real = function(x){
+  return(2.5*cos(x) + 2.5*sin(x) + x)
+}
+
+sim_data %>%
+  ggplot(aes(x = X, y = Y))+
+  geom_point(color = "#0073C2FF", alpha = 0.75)+
+  labs(x = "X",
+       y = "Y",
+       title = "Gráfico de dispersão dos dados simulados com regressão real",
+       colour = "Regressão")+
+  stat_function(fun = reg_real,
+                aes(colour = "Regressao real"), size = 1.25)+
+  theme_bw()+
+  theme(text = element_text(size = 11, 
+                            family ="serif"),
+        plot.title = element_text(hjust = 0.5))
+```
+\
+Separando o conjunto de treinamento e teste e testando inicialmente para apenas $h = 0.2$, mostrando as 10 primeiras observações de teste:
+```{r}
+set.seed(1250, sample.kind="Rounding")
+n_train = 300
+id_train = sample(1:n, size = n_train, replace = F)
+
+x_train = x_all[id_train]
+x_test = x_all[-id_train]
+y_train = y_all[id_train]
+
+
+coefs = loc_lm(x_train, y_train, x_test, h = 0.2, kernel = "gauss_kernel")
+coefs %>% as.data.frame() %>% head(10)
+```
+Podemos analisar graficamente para diferentes valores de $h$ com o kernel gaussiano fixado, utilizando os dados de treinamento no range dado:
+```{r}
+# testando para diferentes h's
+h = c(0.05, 0.2, 0.6, 1.25, 3.25)
+
+p1 = sim_data %>%
+  ggplot(aes(x = X, y = Y))+
+  stat_function(fun = fit_loc_lm, args = list(x_train = x_train, 
+                                              y_train = y_train, 
+                                              h = h[1], kernel = gauss_kernel),
+                aes(colour = "h = 0.05"), size = 1)+
+  stat_function(fun = fit_loc_lm, args = list(x_train = x_train, 
+                                              y_train = y_train, 
+                                              h = h[2], kernel = gauss_kernel),
+                aes(colour = paste0("h = ", h[2])), size = 1)+
+  stat_function(fun = fit_loc_lm, args = list(x_train = x_train, 
+                                              y_train = y_train, 
+                                              h = h[3], kernel = gauss_kernel),
+                aes(colour = paste0("h = ", h[3])), size = 1)+
+  stat_function(fun = fit_loc_lm, args = list(x_train = x_train, 
+                                              y_train = y_train, 
+                                              h = h[4], kernel = gauss_kernel),
+                aes(colour = paste0("h = ", h[4])), size = 1)+
+  stat_function(fun = fit_loc_lm, args = list(x_train = x_train, 
+                                              y_train = y_train, 
+                                              h = h[5], kernel = gauss_kernel),
+                aes(colour = paste0("h = ", h[5])), size = 1)+
+  labs(x = "X",
+       y = "Y",
+       title = "Gráfico de dispersão dos dados simulados com as regressões estimadas",
+       colour = "h")+
+  theme_bw()+
+  theme(text = element_text(size = 11, 
+                            family ="serif"),
+        plot.title = element_text(hjust = 0.5)) +
+  scale_colour_brewer(palette = "Set1")
+
+
+p1
+```
+\
+Se compararmos com a regressão verdadeira apenas usando $h = 0.2$ e $h = 0.6$, teremos:
+```{r}
+sim_data %>%
+  ggplot(aes(x = X, y = Y))+
+  labs(x = "X",
+       y = "Y",
+       title = "Gráfico de dispersão dos dados simulados com regressão real e local",
+       colour = "Regressão")+
+  stat_function(fun = reg_real,
+                aes(colour = "Real"), size = 1)+
+  stat_function(fun = fit_loc_lm, args = list(x_train = x_train, 
+                                              y_train = y_train, 
+                                              h = 0.2, kernel = gauss_kernel),
+                aes(colour = paste0("Local com h = 0.2")), size = 1)+
+  stat_function(fun = fit_loc_lm, args = list(x_train = x_train, 
+                                              y_train = y_train, 
+                                              h = 0.6, kernel = gauss_kernel),
+                aes(colour = paste0("Local com h = 0.6")), size = 1)+
+  theme_bw()+
+  theme(text = element_text(size = 11, 
+                            family ="serif"),
+        plot.title = element_text(hjust = 0.5))+
+  scale_colour_brewer(palette = "Set1")
+```
+# Exercício 2: \
+Lendo os dados e transformando os textos em matriz documento-texto:
+```{r}
+library(tm)
+library(wordcloud)
+library(SnowballC)
+av_texto = read.csv("/home/kuben/estatistica_UFSCAR/Mineracao de dados/listas/lista_2/TMDb_updated.CSV")
+```
+Checando se algum overview é vazio e removendo:
+```{r}
+av_texto %<>% filter(overview != "")
+```
+Fazendo um histograma para a variável resposta:
+```{r}
+av_texto %>%
+  ggplot(aes(x = vote_average)) +
+  geom_histogram(fill = "#0073C2FF", color = "black", bins = 20)+
+  labs(x = "Nota média",
+       y = "Frequência",
+       title = "Histograma das notas médias")+
+  theme(text = element_text(size = 12, 
+                            family ="serif"),
+        plot.title = element_text(hjust = 0.5))
+```
+**Item a**: \
+Transformando a variável de avaliação "overview" em um corpus e depois removendo pontuações, numeros, espaço branco extra, stopwords e utilizando o IDF para penalização de palavras muito frequentes em cada resenha:
+```{r}
+# primeiro transformando em VCorpus
+overview =  av_texto$overview %>% VectorSource %>% VCorpus(readerControl = 
+                                                        list(language = "english"))
+# removendo algumas palavras e stopwords
+overview %<>% tm_map(removeWords, c("the", "and", stopwords("english")))
+
+# Document Term Matrix
+dtm = overview %>% DocumentTermMatrix(control = list(tolower = TRUE,
+                                                     removePunctuation = TRUE,
+                                                     removeNumbers = TRUE,
+                                                     stripWhitespace = TRUE,
+                                                     weighting = weightTfIdf,
+                                                     stopwords = TRUE,
+                                                     stemming = TRUE))
+
+dtm
+```
+Checa-se uma alta esparcidade dos dados, com cerca de 22939 termos e 9970 documentos. Salienta-se que o máximo de termos de uma resenha nesse caso foi de 34. Podemos dar uma pequena olhada em algumas colunas e linhas da matriz documento termo da seguinte maneira:
+```{r}
+inspect(dtm[1:5, 500:505])
+```
+Checa-se a existência de uma grande esparsidade na matriz de documento inteira e no próprio exemplo tomado. Além disso, percebe-se a presença de muitos nomes na matriz anterior o que pode indicar que a matriz documento termo tem muitas palavras que se referem na verdade a nomes. Para a obtenção de uma matriz documento termo mais limpa, podemos remover os termos com maior esparsidade, estabelecendo um máximo de esparcidade para cada termo. Escolheremos um máximo de 0.99 de esparsidade:
+```{r}
+dtm %<>% removeSparseTerms(0.99)
+dtm
+```
+Percebemos uma grande redução no número de termos, tendo agora 488 termos. Além disso a porcentagem de esparsidade deu uma pequena diminuída. Podemos checar novamente alguns termos nos primeiros 5 documentos novamente:
+```{r}
+inspect(dtm[1:5, 400:405])
+```
+Assim, antes de se seguir para a modelagem de fato, podemos averiguar a frequencia dos termos atráves de um gráfico de Word Cloud:
+```{r}
+set.seed(1234, sample.kind="Rounding")
+freq = data.frame(sort(colSums(as.matrix(dtm)), decreasing=TRUE))
+wordcloud(rownames(freq), freq[,1], max.words = 100, colors = brewer.pal(8, "Dark2"),
+          random.order=FALSE, rot.per = 0.35, scale = c(2.15, .5))
+```
+Percebemos que as palavras "life", "new", "find" e "young" tem as maiores frequências entre as demais, tendo "man", "woman", "world", "friend" e entre outras como outras variáveis com maiores frequências. Podemos dividir agora o conjunto de dados em treinamento, validação e teste. Para que haja uma quantidade boa de observações para teste, podemos tomar $20\%$ do conjunto original que nos dão 1994 observações. Para o restante das $80\%$ das observações podemos dividir em $75\%$ de treinamento e $25\%$ de validação, ou seja, teremos 5982 das observações para treino e 1994 para validação, que é grande o suficiente para uma estimativa acurada do risco durante a realização de validação cruzada:
+```{r}
+# dividindo primeiro treino e teste
+set.seed(750, sample.kind="Rounding")
+n_train = 0.6 * nrow(av_texto)
+n_valid = 0.2 * nrow(av_texto)
+ids = 1:nrow(av_texto)
+id_train = sample(ids, size = n_train, replace = F)
+id_valid = sample(ids[-id_train], size = n_valid, replace = F)
+
+# dividino as matrizes
+x_train = dtm[id_train, ]
+x_valid = dtm[id_valid, ]
+x_test = dtm[-c(id_train, id_valid), ]
+
+y_train = av_texto$vote_average[id_train]
+y_valid = av_texto$vote_average[id_valid]
+y_test = av_texto$vote_average[-c(id_train, id_valid)]
+```
+**Item(ii)**: \
+Escolhendo $k$ por validação cruzada para o KNN, computando o risco para cada $k$ diferente:
+```{r}
+library(FNN)
+tam = 50
+k = 1:tam
+risco = numeric(tam)
+
+for(i in 1:tam){
+  preds = knn.reg(train = x_train, test = x_valid, y = y_train, k = k[i])$pred
+  risco[i] = (1/length(y_valid))*(sum(abs(preds - y_valid)))
+}
+```
+Podemos avaliar o risco de acordo com cada $k$:
+```{r}
+data.frame(k = k,
+           risco = risco) %>%
+  ggplot(aes(x = k, y = risco)) +
+  geom_point(color = "#0073C2FF", alpha = 0.75) +
+  geom_line(color = "#0073C2FF",size = 1)+
+  theme_bw()+
+  labs(x = "k",
+       y = "Erro médio absoluto",
+       title = "Risco de acordo com a escolha de k")+
+  theme(text = element_text(size = 11, 
+                            family ="serif"),
+        plot.title = element_text(hjust = 0.5))
+```
+\
+Ou seja, verificamos que a partir de $k = 30$, o erro médio absoluto decai muito pouco, sendo praticamente constante. O menor $k$, será $k = 50$, tendo:
+```{r}
+which.min(risco)
+min(risco)
+```
+Podemos tomar $k = 50$, tendo uma pequena diferença entre $k = 40$ e $k = 50$ como se poder ver abaixo:
+```{r}
+abs(risco[50] - risco[40])
+```
+Ou seja, não vale a pena aumentar mais o range de $k$, pois muito provavelmente a diferença entre os riscos não será tão considerável. Assim, tomaremos $k = 50$ como número de vizinhos. Fixando portanto o número de vizinhos, podemos obter o risco estimado e o intervalo de confiança como segue:
+```{r}
+x_train = dtm[c(id_train, id_valid), ]
+y_train = av_texto$vote_average[c(id_train, id_valid)]
+preds = knn.reg(train = x_train, test = x_test, y = y_train, k = 50)$pred
+
+medidas = data.frame(
+  risco_knn = 1/length(y_test)*(sum(abs(preds - y_test))))
+
+std_error = function(loss_func, preds, y){
+  SD = sqrt((1/length(y))*mean((abs(preds - y) - (loss_func(preds, y)))^2))
+  return(2*SD) 
+}
+
+errors = c(std_error(MAE, preds, y_test))
+# calculando erro padrao para cada metodo
+medidas$IC_lower = medidas$risco_knn - errors
+medidas$IC_upper = medidas$risco_knn + errors
+medidas
+```
+Ou seja, percebemos um pequeno erro médio absoluto, com um intervalo de confiança nao tão grande. \
+**Item (iii):** \
+Agora ajustaremos um modelo de regressão com regularização lasso, usando o conjunto de treinamento inteiro e usando a validação já interna no algoritmo do glmnet para obter $\lambda$ por validação cruzada:
+```{r}
+set.seed(1275)
+# tomando os valores de coeficiente do lasso pela validacao cruzada:
+cv.lasso = sparseMatrix(i = x_train$i, j = x_train$j, x = x_train$v,
+                         dimnames = list(NULL, x_train$dimnames[[2]]),
+                         dims = c(x_train$nrow, x_train$ncol)) %>%
+  cv.glmnet(y_train, alpha = 1, stantardize = T)
+
+# melhores valores de lambda
+cv.lasso$lambda.min
+cv.lasso$lambda.1se
+```
+Ou seja, o $\lambda$ mínimo é dado por aproximadamente 0.02, com o $\lambda$ com maior penalização sendo 0.187. Podemos checar também o Risco contra os valores de $\lambda$:
+```{r}
+plot(cv.lasso)
+```
+\
+Percebemo que o $\lambda$ mínimo diminui o número de covariaveis de 488 para 138, tendo portanto uma regularização adequada, enquanto que o $\lambda$ com maior penalização possui apenas 1 covariavel selecionada, tendo portanto uma filtragem muito brusca das covariaveis. Podemos checar a importância das covariaveis como segue:
+```{r}
+# usando matriz esparsa
+mod_lasso = sparseMatrix(i = x_train$i, j = x_train$j, x = x_train$v,
+                         dimnames = list(NULL, x_train$dimnames[[2]]),
+                         dims = c(x_train$nrow, x_train$ncol)) %>%
+  glmnet(y_train, alpha = 1, 
+                  lambda = cv.lasso$lambda.min, stantardize = T)
+
+coefs_data = data.frame(coefs = coef(mod_lasso)[-1],
+                        names = as.factor(row.names(coef(mod_lasso))[-1])) %>%
+  filter(coefs != 0)
+```
+```{r}
+sliced_coefs_data = coefs_data %>%
+  filter(coefs != 0)%>%
+  mutate(negative = as.factor(ifelse(coefs < 0, "negativo",
+                                     "positivo"))) %>%
+  arrange(coefs) %>%
+  slice(c(1:20, (nrow(coefs_data) - 19):nrow(coefs_data)))
+
+sliced_coefs_data %>%
+  mutate(names = fct_reorder(names, abs(coefs), .desc = F)) %>%
+  ggplot(aes(x = names, y = coefs, fill = negative))+
+  geom_bar(stat = "identity")+
+  labs(title = "Coeficientes do modelo de regressão Lasso ajustado",
+       y = "Valores dos coeficientes",
+       fill = "Coeficiente")+
+  coord_flip()+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        text = element_text(size = 12, 
+                            family ="serif"),
+        plot.title = element_text(hjust = 0.5))+
+  facet_wrap(~negative, scales = "free", ncol = 2)+
+  scale_fill_brewer(palette = "Set1")
+```
+Ou seja, nota-se que as principais palavras positivas são "director", "friendship", "despit", "age", "villag", enquanto que as principais palavras negativas são "plot", "movi" e "univers", indicando que um filme que possívelmente tem um diretor famoso, trabalha com a amizade de personagens no enredo e possivelmente tem alguma reviravolta ou superação como indica a palavra com stemming "despit" (de "despite", traduzido para apesar de no portugues), tem tendência a ter melhores notas, enquanto que um filme que que tem a presença grandes planos (plot) no enredo, auto-citação no resumo (autocitação com a palavra movie) e também tem as palavras derivadas de universo nem seu resumo (que talvez inclua "salvar o universo" ou um plano que envovle o universo), tende a ter avaliações ruins. Por fim, calculemos o risco e seu intervalo de confiança:
+```{r}
+# matriz de preditores
+x_test_sparse = sparseMatrix(i = x_test$i, j = x_test$j, x = x_test$v,
+                         dimnames = list(NULL, x_test$dimnames[[2]]),
+                         dims = c(x_test$nrow, x_test$ncol))
+
+pred.lasso = predict(mod_lasso,
+s = cv.lasso$lambda.min,
+newx = x_test_sparse)
+
+# calculando as medidas de validacao
+medidas = data.frame(
+  risco_lasso = 1/length(y_test)*(sum(abs(pred.lasso - y_test)))
+)
+
+errors = std_error(MAE, pred.lasso, y_test)
+# calculando erro padrao para cada metodo
+medidas$IC_lower = medidas$risco_lasso - errors
+medidas$IC_upper = medidas$risco_lasso + errors
+medidas
+```
+Percebe-se uma certa reduzida no risco do lasso em comparação ao do KNN, com seu intervalo de confiança também reduzida.
+
+
+
+
+
+

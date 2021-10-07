@@ -413,10 +413,59 @@ medidas$IC_lower = medidas$risco_lasso - errors
 medidas$IC_upper = medidas$risco_lasso + errors
 medidas
 ```
-Percebe-se uma certa reduzida no risco do lasso em comparação ao do KNN, com seu intervalo de confiança também reduzida.
+Percebe-se uma certa reduzida no risco do lasso em comparação ao do KNN, com seu intervalo de confiança também reduzida. Além disso, o número de covariaveis e a interpretação fornecida pelo modelo linear com regularização Lasso tem um bom ajuste
+\
+**Item IV**:
+Podemos ajustar um modelo de Florestas aleatórias usando como medida de importância a impureza de cada variável e selecionando $\left \lfloor {\sqrt{p}} \right \rfloor$ variáveis para cada árvore de decisão:
+```{r}
+library(ranger)
+x_train_sparse = sparseMatrix(i = x_train$i, j = x_train$j, x = x_train$v,
+                         dimnames = list(NULL, x_train$dimnames[[2]]),
+                         dims = c(x_train$nrow, x_train$ncol))
 
+mat = cbind(x_train_sparse,y_train)
 
+rf_texto = ranger(data = mat, dependent.variable.name = "y_train", 
+                  importance = "impurity", seed = 1776)
+```
+Assim, obtemos a estimativa de risco com o conjunto de teste:
+```{r}
+preds_rf = rf_texto %>%
+  predict(data = x_test_sparse)
+```
+```{r}
+# calculando as medidas de validacao
+medidas = data.frame(
+  risco_random_forest = 1/length(y_test)*(sum(abs(preds_rf$predictions - y_test)))
+)
 
+errors = std_error(MAE, preds_rf$predictions, y_test)
+# calculando erro padrao para cada metodo
+medidas$IC_lower = medidas$risco_random_forest - errors
+medidas$IC_upper = medidas$risco_random_forest + errors
+medidas
+```
+Notamos ainda uma redução no risco em comparação ao modelo linear com regularização lasso. Podemos analisar a importancias das variáveis como segue:
+```{r}
+import = tibble(variable = names(importance(rf_texto)),
+                importance = importance(rf_texto)) %>%
+  arrange(desc(importance))
+
+import %>% top_n(n = 25) %>%
+  ggplot(aes(x = reorder(variable, importance),
+            y = importance, fill = importance))+
+  geom_bar(stat = "identity", position = "dodge") + coord_flip()+
+  labs(y = "Importância de variável",
+       x = "",
+       title = "Sumário da importâncias de variáveis")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        text = element_text(size = 12, 
+                            family ="serif"),
+        plot.title = element_text(hjust = 0.5))+
+  scale_fill_gradient(low = "firebrick2", high = "dodgerblue3")
+```
+Percebemos algumas semelhanças e diferenças entre a importância de variável captada pela floresta aleatória em comparação ao modelo de regressão com lasso, tendo os termos "plot", "film", "world" e "movi" como importantes tanto para o lasso quanto o random forest. Porém, os termos "despit", "friendship" e "director" que são tidos como relativamente importantes pelo lasso não são tão importantes no modelo de arvores aleatórias, e termos que são importantes pela árvore aleatória como "stori" e "seri" não tão importantes. Mas, em suma, as principais variáveis importantes são condizentes. 
 
 
 

@@ -276,7 +276,7 @@ y_train = av_texto$vote_average[id_train]
 y_valid = av_texto$vote_average[id_valid]
 y_test = av_texto$vote_average[-c(id_train, id_valid)]
 ```
-**Item(ii)**: \
+**Item b**: \
 Escolhendo $k$ por validação cruzada para o KNN, computando o risco para cada $k$ diferente:
 ```{r}
 library(FNN)
@@ -335,7 +335,7 @@ medidas$IC_upper = medidas$risco_knn + errors
 medidas
 ```
 Ou seja, percebemos um pequeno erro médio absoluto, com um intervalo de confiança nao tão grande. \
-**Item (iii):** \
+**Item c:** \
 Agora ajustaremos um modelo de regressão com regularização lasso, usando o conjunto de treinamento inteiro e usando a validação já interna no algoritmo do glmnet para obter $\lambda$ por validação cruzada:
 ```{r}
 set.seed(1275)
@@ -413,18 +413,16 @@ medidas$IC_lower = medidas$risco_lasso - errors
 medidas$IC_upper = medidas$risco_lasso + errors
 medidas
 ```
-Percebe-se uma certa reduzida no risco do lasso em comparação ao do KNN, com seu intervalo de confiança também reduzida. Além disso, o número de covariaveis e a interpretação fornecida pelo modelo linear com regularização Lasso tem um bom ajuste
-\
-**Item IV**:
+Percebe-se uma certa reduzida no risco do lasso em comparação ao do KNN, com seu intervalo de confiança também reduzido. \
+**Item d:** \
 Podemos ajustar um modelo de Florestas aleatórias usando como medida de importância a impureza de cada variável e selecionando $\left \lfloor {\sqrt{p}} \right \rfloor$ variáveis para cada árvore de decisão:
 ```{r}
 library(ranger)
+library(randomForest)
 x_train_sparse = sparseMatrix(i = x_train$i, j = x_train$j, x = x_train$v,
                          dimnames = list(NULL, x_train$dimnames[[2]]),
                          dims = c(x_train$nrow, x_train$ncol))
-
 mat = cbind(x_train_sparse,y_train)
-
 rf_texto = ranger(data = mat, dependent.variable.name = "y_train", 
                   importance = "impurity", seed = 1776)
 ```
@@ -433,31 +431,34 @@ Assim, obtemos a estimativa de risco com o conjunto de teste:
 preds_rf = rf_texto %>%
   predict(data = x_test_sparse)
 ```
+
 ```{r}
 # calculando as medidas de validacao
 medidas = data.frame(
   risco_random_forest = 1/length(y_test)*(sum(abs(preds_rf$predictions - y_test)))
 )
-
+ 
 errors = std_error(MAE, preds_rf$predictions, y_test)
+
 # calculando erro padrao para cada metodo
 medidas$IC_lower = medidas$risco_random_forest - errors
 medidas$IC_upper = medidas$risco_random_forest + errors
 medidas
 ```
 Notamos ainda uma redução no risco em comparação ao modelo linear com regularização lasso. Podemos analisar a importancias das variáveis como segue:
+ 
 ```{r}
-import = tibble(variable = names(importance(rf_texto)),
-                importance = importance(rf_texto)) %>%
+import = tibble(variable = names(ranger::importance(rf_texto)),
+                importance = ranger::importance(rf_texto)) %>%
   arrange(desc(importance))
-
 import %>% top_n(n = 25) %>%
   ggplot(aes(x = reorder(variable, importance),
             y = importance, fill = importance))+
   geom_bar(stat = "identity", position = "dodge") + coord_flip()+
   labs(y = "Importância de variável",
        x = "",
-       title = "Sumário da importâncias de variáveis")+
+       title = "Sumário da importâncias de variáveis",
+       fill = "Importância")+
   theme_bw()+
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
         text = element_text(size = 12, 
@@ -466,6 +467,217 @@ import %>% top_n(n = 25) %>%
   scale_fill_gradient(low = "firebrick2", high = "dodgerblue3")
 ```
 Percebemos algumas semelhanças e diferenças entre a importância de variável captada pela floresta aleatória em comparação ao modelo de regressão com lasso, tendo os termos "plot", "film", "world" e "movi" como importantes tanto para o lasso quanto o random forest. Porém, os termos "despit", "friendship" e "director" que são tidos como relativamente importantes pelo lasso não são tão importantes no modelo de arvores aleatórias, e termos que são importantes pela árvore aleatória como "stori" e "seri" não tão importantes. Mas, em suma, as principais variáveis importantes são condizentes. 
+**item (e):** \
+Podemos em seguida utilizar uma validação cruzada para escolher o melhor número de iteração $B$ para o Xgboost, fixando um early stopping de $20$, uma taxa de aprendizado $\lambda = 0.01$, e uma profundidade 6 de árvore:
+```{r}
+library(xgboost)
+# ajustando xgboost na matriz de treinamento esparsa
+xgb_cv = xgb.cv(data = x_train_sparse,
+                label = y_train,
+                nrounds = 1000,
+                nfold = 5,
+                eta = 0.01,
+                early_stopping_rounds = 20,
+                verbose = F)
+```
+Obtendo-se como melhor iteração:
+```{r}
+xgb_cv$best_iteration
+```
+Tendo a raiz quadrada do erro quadrático médio por iteração com seu erro padrão associado:
+```{r}
+historico = xgb_cv$evaluation_log
+historico %>%
+  ggplot(aes(x = iter, y = test_rmse_mean)) +
+  geom_line(color = "#0073C2FF",size = 1)+
+  geom_ribbon(aes(y = test_rmse_mean, ymin = test_rmse_mean - 2*test_rmse_std,
+                  ymax = test_rmse_mean + 2*test_rmse_std), color = "#0073C2FF",
+              alpha = 0.35) +
+  theme_bw()+
+  labs(x = "Iterações",
+       y = "Raiz do erro quadrático médio",
+       title = "Risco para cada iteração no conjunto de validação")+
+  theme(text = element_text(size = 11, 
+                            family ="serif"),
+        plot.title = element_text(hjust = 0.5))
+```
+Notamos que de fato, a partir da iteração 400, não houve muita redução do risco. Assim 502 iterações é mais que o suficiente para obter um bom ajuste. Assim, com $\lambda = 0.01$ e $B = 502$, mantendo ainda um early stopping de 20 iterações, obtemos o ajuste por xgboost com uma profundidade de árvore 6:
+```{r}
+xgb_texto = xgboost(data = x_train_sparse,
+                    label = y_train,
+                    nrounds = xgb_cv$best_iteration,
+                    early_stopping_rounds = 20,
+                    eta = 0.01,
+                    verbose = F)
+```
+Obtendo-se o risco estimado no conjunto de teste e o intervalo de confiança associado:
+```{r}
+preds_xgb = xgb_texto %>%
+  predict(x_test_sparse)
+```
+```{r}
+# calculando as medidas de validacao
+medidas = data.frame(
+  risco_xgb = 1/length(y_test)*(sum(abs(preds_xgb - y_test)))
+)
+ 
+errors = std_error(MAE, preds_xgb, y_test)
+
+# calculando erro padrao para cada metodo
+medidas$IC_lower = medidas$risco_xgb - errors
+medidas$IC_upper = medidas$risco_xgb + errors
+medidas
+```
+Observa-se um risco maior que o da floresta aleatória, e um intervalo de confiança com limites mais amplos. Assim, a floresta aleatória segue sendo o modelo com melhor perfomance dentre os demais. Por fim, podemos obter a importância de variaveis para as 25 variáveis mais importantes:
+```{r}
+mat_imp = xgb.importance(feature_names = colnames(x_train),model = xgb_texto)
+
+mat_imp %>% top_n(n = 25) %>%
+  ggplot(aes(x = reorder(Feature, Gain),
+            y = Gain, fill = Gain))+
+  geom_bar(stat = "identity", position = "dodge") + coord_flip()+
+  labs(y = "Contribuição de cada variável",
+       x = "",
+       title = "Sumário da importâncias de variáveis para o Xgboost",
+       fill = "Contribuição")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        text = element_text(size = 12, 
+                            family ="serif"),
+        plot.title = element_text(hjust = 0.5))+
+  scale_fill_gradient(low = "firebrick2", high = "dodgerblue3")
+```
+Notamos grande similaridade da distribuição de importância para o Xgboost em comparação ao florestas aleatórias, com as 5 variáveis mais importantes sendo as mesmas: "plot", "film", "movi", "world" e "final", tal que "plot" é a variável com maior importância disparada. Assim, mantém-se os mesmos comentários feitos na comparação entre a importância de variáveis associada a floresta aleatória e para o modelo de regressão lasso, ou seja, apesar de certas diferenças, as principais variáveis mais importantes são as mesmas. \
+**item (f):** \
+Inicialmente podemos ajustar uma rede neural feedforward com 3 camadas,com 64, 32 e 16 neurônios respectivamente, todas com função de ativação Relu, tomando um total de 1000 épocas com early stopping de 20 iterações, um tamanho de batch fixado de 32 (default do keras) e uma taxa de aprendizado de 0.005 no otimizador \textit{adam}:
+```{r}
+library(keras)
+# arquitetura da rede neural feed forward
+nn_texto = keras_model_sequential() %>%
+  layer_dense(units = 64, activation = "relu", input_shape = ncol(x_train)) %>%
+  layer_dense(units = 32, activation = "relu") %>%
+  layer_dense(units = 16, activation = "relu") %>%
+  layer_dense(units = 1)
+
+# funcao objetivo especificada
+nn_texto %>% compile(
+  loss = "mse",
+  optimizer = optimizer_adam(learning_rate = 0.005),
+  metrics = list("mean_absolute_error")
+)
+
+ajuste_nn = nn_texto %>% keras::fit(
+  scale(as.matrix(x_train)),
+  y_train,
+  epochs = 1000,
+  validation_split = 0.25,
+  callbacks = list(callback_early_stopping(monitor = "loss", patience = 30)),
+  verbose = F
+)
+```
+Podemos averiguar como se dá o desempenho da rede neural no conjunto de validação para todas as épocas selecionadas:
+```{r}
+plot(ajuste_nn, metrics = "loss")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        text = element_text(size = 12, 
+                            family ="serif"),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = "top")+
+  labs(x = "Época",
+       y = "Risco",
+       fill = "Dados",
+       colour = "Dados")+
+  scale_fill_brewer(palette = "Set1") +
+  scale_colour_brewer(palette = "Set1")+
+  ylim(0, 12)
+```
+Verifica-se uma diminuição rápida do risco no conjunto de treinamento e uma diminuição gradativa no conjunto de teste, havendo um early stopping antes da 200ª época. Caso chequemos o desempenho da rede neural no conjunto de teste, obtemos o risco e seu intervalo de confiança:
+```{r}
+preds_nn = nn_texto %>%
+  predict(scale(as.matrix(x_test)))
+```
+```{r}
+# calculando as medidas de validacao
+medidas = data.frame(
+  risco_nn = 1/length(y_test)*(sum(abs(as.numeric(preds_nn) - y_test)))
+)
+ 
+errors = std_error(MAE, as.numeric(preds_nn), y_test)
+
+# calculando erro padrao para cada metodo
+medidas$IC_lower = medidas$risco_nn - errors
+medidas$IC_upper = medidas$risco_nn + errors
+medidas
+```
+Verifica-se um elevado risco para essa rede neural juntamente com um intervalo de confiança amplo, tendo ainda o modelo de floresta aleatória como o melhor. Podemos adicionar um dropout para cada camada com certa porcentagem cada, tendo um dropout de 50% na primeira, 40% na segunda e 30% na ultima camada:
+```{r}
+# repetindo mesmo procedimento mas adicionando dropout
+# arquitetura da rede neural feed forward
+
+nn_texto_drop = keras_model_sequential() %>%
+  layer_dense(units = 64, activation = "relu", input_shape = ncol(x_train)) %>%
+  layer_dropout(rate = 0.5) %>%
+  layer_dense(units = 32, activation = "relu") %>%
+  layer_dropout(rate = 0.4) %>%
+  layer_dense(units = 16, activation = "relu") %>%
+  layer_dropout(rate = 0.3) %>%
+  layer_dense(units = 1)
+
+# funcao objetivo especificada
+nn_texto_drop %>% compile(
+  loss = "mse",
+  optimizer = optimizer_adam(learning_rate = 0.005),
+  metrics = list("mean_absolute_error")
+)
+
+ajuste_nn_drop = nn_texto_drop %>% keras::fit(
+  scale(as.matrix(x_train)),
+  y_train,
+  epochs = 1000,
+  validation_split = 0.25,
+  callbacks = list(callback_early_stopping(monitor = "loss", patience = 30)),
+  verbose = F
+)
+```
+Com o seguinte desempenho da rede neural com dropout por época no conjunto de treino e validação:
+```{r}
+plot(ajuste_nn_drop, metrics = "loss")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        text = element_text(size = 12, 
+                            family ="serif"),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = "top")+
+  labs(x = "Época",
+       y = "Risco",
+       fill = "Dados",
+       colour = "Dados")+
+  scale_fill_brewer(palette = "Set1") +
+  scale_colour_brewer(palette = "Set1")+
+  ylim(0, 12)
+```
+Percebe-se uma considerável melhora no desempenho do conjunto de validação, com uma grande redução da curva de risco, apesar de o conjunto de treino ter uma piora no desempenho. Além disso, atingiu-se a 200ª época antes do early stopping com uma relativa estabilidade nos riscos. Espera-se assim, que o risco para o conjunto de teste seja relativamente menor em comparação a rede neural sem dropout: 
+```{r}
+preds_nn = nn_texto_drop %>%
+  predict(scale(as.matrix(x_test)))
+```
+```{r}
+# calculando as medidas de validacao
+medidas = data.frame(
+  risco_nn = 1/length(y_test)*(sum(abs(as.numeric(preds_nn) - y_test)))
+)
+ 
+errors = std_error(MAE, as.numeric(preds_nn), y_test)
+
+# calculando erro padrao para cada metodo
+medidas$IC_lower = medidas$risco_nn - errors
+medidas$IC_upper = medidas$risco_nn + errors
+medidas
+```
+Percebe-se uma grande diminuida do risco da rede neural ao se utilizar dropout para cada camada da rede, obtendo-se inclusive um risco menor que a floresta aleatória na terceira casa decimal. Assim, obtém-se grandes melhoras no desempenho da rede neural definida ao se utilizar dropout em cada camada, sendo agora este o melhor modelo dentre os demais utilizados. \
+**item (g)**
+
 
 
 

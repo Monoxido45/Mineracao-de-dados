@@ -268,11 +268,13 @@ id_train = sample(ids, size = n_train, replace = F)
 id_valid = sample(ids[-id_train], size = n_valid, replace = F)
 
 # dividino as matrizes
-x_train = dtm[id_train, ]
+x_train = dtm[c(id_train, id_valid), ]
+x_train_valid = dtm[id_train, ]
 x_valid = dtm[id_valid, ]
 x_test = dtm[-c(id_train, id_valid), ]
 
-y_train = av_texto$vote_average[id_train]
+y_train = av_texto$vote_average[c(id_train, id_valid)]
+y_train_valid = av_texto$vote_average[id_train]
 y_valid = av_texto$vote_average[id_valid]
 y_test = av_texto$vote_average[-c(id_train, id_valid)]
 ```
@@ -285,7 +287,7 @@ k = 1:tam
 risco = numeric(tam)
 
 for(i in 1:tam){
-  preds = knn.reg(train = x_train, test = x_valid, y = y_train, k = k[i])$pred
+  preds = knn.reg(train = x_train_valid, test = x_valid, y = y_train_valid, k = k[i])$pred
   risco[i] = (1/length(y_valid))*(sum(abs(preds - y_valid)))
 }
 ```
@@ -316,8 +318,6 @@ abs(risco[50] - risco[40])
 ```
 Ou seja, não vale a pena aumentar mais o range de $k$, pois muito provavelmente a diferença entre os riscos não será tão considerável. Assim, tomaremos $k = 50$ como número de vizinhos. Fixando portanto o número de vizinhos, podemos obter o risco estimado e o intervalo de confiança como segue:
 ```{r}
-x_train = dtm[c(id_train, id_valid), ]
-y_train = av_texto$vote_average[c(id_train, id_valid)]
 preds = knn.reg(train = x_train, test = x_test, y = y_train, k = 50)$pred
 
 medidas = data.frame(
@@ -373,7 +373,7 @@ sliced_coefs_data = coefs_data %>%
   mutate(negative = as.factor(ifelse(coefs < 0, "negativo",
                                      "positivo"))) %>%
   arrange(coefs) %>%
-  slice(c(1:20, (nrow(coefs_data) - 19):nrow(coefs_data)))
+  dplyr::slice(c(1:20, (nrow(coefs_data) - 19):nrow(coefs_data)))
 
 sliced_coefs_data %>%
   mutate(names = fct_reorder(names, abs(coefs), .desc = F)) %>%
@@ -418,7 +418,6 @@ Percebe-se uma certa reduzida no risco do lasso em comparação ao do KNN, com s
 Podemos ajustar um modelo de Florestas aleatórias usando como medida de importância a impureza de cada variável e selecionando $\left \lfloor {\sqrt{p}} \right \rfloor$ variáveis para cada árvore de decisão:
 ```{r}
 library(ranger)
-library(randomForest)
 x_train_sparse = sparseMatrix(i = x_train$i, j = x_train$j, x = x_train$v,
                          dimnames = list(NULL, x_train$dimnames[[2]]),
                          dims = c(x_train$nrow, x_train$ncol))
@@ -470,6 +469,7 @@ Percebemos algumas semelhanças e diferenças entre a importância de variável 
 **item (e):** \
 Podemos em seguida utilizar uma validação cruzada para escolher o melhor número de iteração $B$ para o Xgboost, fixando um early stopping de $20$, uma taxa de aprendizado $\lambda = 0.01$, e uma profundidade 6 de árvore:
 ```{r}
+set.seed(1500)
 library(xgboost)
 # ajustando xgboost na matriz de treinamento esparsa
 xgb_cv = xgb.cv(data = x_train_sparse,
@@ -675,9 +675,113 @@ medidas$IC_lower = medidas$risco_nn - errors
 medidas$IC_upper = medidas$risco_nn + errors
 medidas
 ```
-Percebe-se uma grande diminuida do risco da rede neural ao se utilizar dropout para cada camada da rede, obtendo-se inclusive um risco menor que a floresta aleatória na terceira casa decimal. Assim, obtém-se grandes melhoras no desempenho da rede neural definida ao se utilizar dropout em cada camada, sendo agora este o melhor modelo dentre os demais utilizados. \
+Percebe-se uma grande diminuida do risco da rede neural ao se utilizar dropout para cada camada da rede, tendo porém um risco maior que a floresta aleatória. Assim, obtém-se grandes melhoras no desempenho da rede neural definida ao se utilizar dropout em cada camada. \
 **item (g)**
+Por fim, podemos ajustar uma kernel ridge regression com um kernel gaussiano, fixando $\lambda = 0.5$ e algum valor bom para a largura de banda $h$. Para tal, podemos implementar o kernel ridge regression com kernel gaussiano e através de uma pequena validação cruzada em um subconjunto do conjunto de treinamento total determinar um valor bom para $h$, realizando dessa forma um pequno tuning: 
+```{r}
+# implementando primeiro a matriz de gram
+gram = function(x, h){
+  return(exp(-(as.matrix(dist(x))^2)/(2*(h^2))))
+}
 
+# implementando o krr
+KRR = function(x, lambda, h, y){
+  K = gram(x, h)
+  # decomposicao espectral
+  ev = eigen(K)
+  U = ev$vectors
+  L = diag(ev$values)
+  eq_inv = t(solve(U)) %*% solve(L + lambda*diag(1, nrow = nrow(x))) %*% solve(U)
+  return(eq_inv %*% y)
+}
+  
+  
+pred_krr = function(alpha, x_test, x, h){
+  k = matrix(nrow = nrow(x), ncol = nrow(x_test))
+  for(i in 1:nrow(x_test)){
+    dist_quad = rowSums(sweep(x, 2, x_test[i, ])^2)
+    k[, i] = exp(-(dist_quad)/(2*h^2))
+  }
+  return(as.numeric(t(alpha) %*% k))
+}
+# implementando a validacao cruzada para h em certo range, de 1 a 20
+cv_KRR = function(x_train, x_valid, y_train, y_valid, lambda, ngrid){
+  h = 1:ngrid
+  risco = numeric(length(h))
+  for(i in 1:length(h)){
+    alpha = KRR(x_train, lambda, h[i], y_train)
+    preds = pred_krr(alpha, x_valid, x_train, h[i])
+    risco[i] = (1/length(y_valid))*sum(abs(preds - y_valid))
+  }
+  return(risco)
+}
 
+# tomando apenas 1000 observações para treino e validação
+sample_subconj = sample(1:nrow(x_train), 1000, replace = F)
+subconj_train = x_train[sample_subconj[1:700], ]
+y_subconj_train = y_train[sample_subconj[1:700]]
+y_subconj_valid = y_train[sample_subconj[701:1000]]
+subconj_valid = x_train[sample_subconj[701:1000], ]
+
+riscos = cv_KRR(as.matrix(subconj_train), as.matrix(subconj_valid), 
+       y_subconj_train, y_subconj_valid, lambda = 0.5, 20)
+```
+```{r}
+riscos_data_krr = data.frame(it = 1:20,
+                             riscos = riscos)
+riscos_data_krr %>%
+  ggplot(aes(x = it, y = riscos))+
+  geom_point(color = "#0073C2FF", alpha = 0.75) +
+  geom_line(color = "#0073C2FF",size = 1)+
+  theme_bw()+
+  labs(x = "k",
+       y = "Erro médio absoluto",
+       title = "Risco de acordo com a escolha de k")+
+  theme(text = element_text(size = 11, 
+                            family ="serif"),
+        plot.title = element_text(hjust = 0.5))
+```
+Ou seja, podemos tomar $h = 4$ com $\lambda = 0.5$ e estimar $\alpha$ pelos dados de treinamento:
+```{r}
+alpha_krr = KRR(as.matrix(x_train), lambda = 0.5, h = 4, y_train)
+```
+Predizendo em seguida o conjunto de teste:
+```{r}
+preds_krr = pred_krr(alpha_krr, as.matrix(x_test), as.matrix(x_train), h = 4)
+```
+```{r}
+# calculando as medidas de validacao
+medidas = data.frame(
+  risco_krr = 1/length(y_test)*(sum(abs(as.numeric(preds_krr) - y_test)))
+)
+ 
+errors = std_error(MAE, as.numeric(preds_krr), y_test)
+
+# calculando erro padrao para cada metodo
+medidas$IC_lower = medidas$risco_krr - errors
+medidas$IC_upper = medidas$risco_krr + errors
+medidas
+```
+Vemos um ajuste melhor que o da floresta aleatória, com um intervalo de confiança também menor. Por fim, podemos plotar os valores preditos versus os observados para cada modelo como a seguir:
+```{r}
+# juntando todas as predicoes
+all_preds = data.frame(resp = rep(y_test, 6),
+                       preds = c(preds, as.numeric(pred.lasso), preds_rf$predictions,
+                                preds_xgb, as.numeric(preds_nn), preds_krr),
+                       mods = c(rep("KNN", length(y_test)), rep("Lasso", length(y_test)),
+                                rep("Floresta aleatórias", length(y_test)),
+                                rep("Xgboost", length(y_test)),
+                                rep("Rede neural", length(y_test)),
+                                rep("KRR", length(y_test))))
+
+all_preds %>%
+  ggplot(aes(x = preds, y = resp)) +
+  geom_point(color = "#0073C2FF", alpha = 0.55)+
+  geom_abline(intercept = 0, slope = 1, colour = "red", linetype = "dashed") +
+  xlim(min(all_preds$preds), max(all_preds$preds)) +
+  facet_wrap(~mods)
+```
+```{r}
+```
 
 

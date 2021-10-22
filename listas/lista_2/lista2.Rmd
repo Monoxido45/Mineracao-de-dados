@@ -217,6 +217,22 @@ av_texto %>%
                             family ="serif"),
         plot.title = element_text(hjust = 0.5))
 ```
+Vemos que as notas vao de 0 a 10, tendo algumas com valor 0. Analisando também a distribuição da contagem de votos:
+```{r}
+av_texto %>%
+  ggplot(aes(x = vote_count)) +
+  geom_histogram(fill = "#0073C2FF", color = "black", bins = 20)+
+  labs(x = "Contagem",
+       y = "Frequência",
+       title = "Histograma das contagens de voto")+
+  theme(text = element_text(size = 12, 
+                            family ="serif"),
+        plot.title = element_text(hjust = 0.5))
+```
+Vemos que muitos filmes tiveram poucos votos, com alguns possivelmente não tendo votos e tendo nota 0 assimilada apenas por isso. Podemos filtrar tais filmes para evitar a presença de ruídos nos modelos que serão utilizados a seguir:
+```{r}
+av_texto %<>% filter(vote_count != 0)
+```
 **Item a**: \
 Transformando a variável de avaliação "overview" em um corpus e depois removendo pontuações, numeros, espaço branco extra, stopwords e utilizando o IDF para penalização de palavras muito frequentes em cada resenha:
 ```{r}
@@ -307,32 +323,32 @@ data.frame(k = k,
         plot.title = element_text(hjust = 0.5))
 ```
 \
-Ou seja, verificamos que a partir de $k = 30$, o erro médio absoluto decai muito pouco, sendo praticamente constante. O menor $k$, será $k = 50$, tendo:
+Ou seja, verificamos que a partir de $k = 30$, o erro médio absoluto decai muito pouco, sendo praticamente constante. Podemos ver qual $k$ com menor risco:
 ```{r}
 which.min(risco)
 min(risco)
 ```
-Podemos tomar $k = 50$, tendo uma pequena diferença entre $k = 40$ e $k = 50$ como se poder ver abaixo:
+Podemos tomar então $k = 45$, tendo uma pequena diferença entre $k = 45$ e $k = 50$ como se pode ver abaixo:
 ```{r}
 abs(risco[50] - risco[40])
 ```
-Ou seja, não vale a pena aumentar mais o range de $k$, pois muito provavelmente a diferença entre os riscos não será tão considerável. Assim, tomaremos $k = 50$ como número de vizinhos. Fixando portanto o número de vizinhos, podemos obter o risco estimado e o intervalo de confiança como segue:
+Ou seja, não vale a pena aumentar mais o range de $k$, pois muito provavelmente a diferença entre os riscos não será tão considerável. Assim, tomaremos $k = 45$ como número de vizinhos. Fixando portanto o número de vizinhos, podemos obter o risco estimado e o intervalo de confiança como segue:
 ```{r}
-preds = knn.reg(train = x_train, test = x_test, y = y_train, k = 50)$pred
+preds_knn = knn.reg(train = x_train, test = x_test, y = y_train, k = 45)$pred
 
-medidas = data.frame(
-  risco_knn = 1/length(y_test)*(sum(abs(preds - y_test))))
+medidas_knn = data.frame(
+  risco_knn = 1/length(y_test)*(sum(abs(preds_knn - y_test))))
 
 std_error = function(loss_func, preds, y){
-  SD = sqrt((1/length(y))*mean((abs(preds - y) - (loss_func(preds, y)))^2))
+  SD = sqrt((1/length(y))*mean((abs(preds_knn - y) - (loss_func(preds_knn, y)))^2))
   return(2*SD) 
 }
 
 errors = c(std_error(MAE, preds, y_test))
 # calculando erro padrao para cada metodo
-medidas$IC_lower = medidas$risco_knn - errors
-medidas$IC_upper = medidas$risco_knn + errors
-medidas
+medidas_knn$IC_lower = medidas_knn$risco_knn - errors
+medidas_knn$IC_upper = medidas_knn$risco_knn + errors
+medidas_knn
 ```
 Ou seja, percebemos um pequeno erro médio absoluto, com um intervalo de confiança nao tão grande. \
 **Item c:** \
@@ -354,7 +370,7 @@ Ou seja, o $\lambda$ mínimo é dado por aproximadamente 0.02, com o $\lambda$ c
 plot(cv.lasso)
 ```
 \
-Percebemo que o $\lambda$ mínimo diminui o número de covariaveis de 488 para 138, tendo portanto uma regularização adequada, enquanto que o $\lambda$ com maior penalização possui apenas 1 covariavel selecionada, tendo portanto uma filtragem muito brusca das covariaveis. Podemos checar a importância das covariaveis como segue:
+Percebemo que o $\lambda$ mínimo diminui o número de covariaveis de 488 para 269, tendo portanto uma regularização adequada, enquanto que o $\lambda$ com maior penalização possui 155 covariaveis selecionadas, tendo portanto uma filtragem suave das covariaveis. Podemos checar a importância das covariaveis como segue:
 ```{r}
 # usando matriz esparsa
 mod_lasso = sparseMatrix(i = x_train$i, j = x_train$j, x = x_train$v,
@@ -391,7 +407,7 @@ sliced_coefs_data %>%
   facet_wrap(~negative, scales = "free", ncol = 2)+
   scale_fill_brewer(palette = "Set1")
 ```
-Ou seja, nota-se que as principais palavras positivas são "director", "friendship", "despit", "age", "villag", enquanto que as principais palavras negativas são "plot", "movi" e "univers", indicando que um filme que possívelmente tem um diretor famoso, trabalha com a amizade de personagens no enredo e possivelmente tem alguma reviravolta ou superação como indica a palavra com stemming "despit" (de "despite", traduzido para apesar de no portugues), tem tendência a ter melhores notas, enquanto que um filme que que tem a presença grandes planos (plot) no enredo, auto-citação no resumo (autocitação com a palavra movie) e também tem as palavras derivadas de universo nem seu resumo (que talvez inclua "salvar o universo" ou um plano que envovle o universo), tende a ter avaliações ruins. Por fim, calculemos o risco e seu intervalo de confiança:
+Ou seja, nota-se que as principais palavras positivas são "despit", "friendship", "war", "tell", "director", enquanto que as principais palavras negativas são "ancient", "creatur" e "group", indicando que um filme que possívelmente tem um diretor famoso, trabalha com a amizade de personagens no enredo e possivelmente tem alguma reviravolta ou superação como indica a palavra com stemming "despit" (de "despite", traduzido para "apesar de" no portugues), tem tendência a ter melhores notas, enquanto que um filme que tem a presença de criaturas (creature), um contexto ou coisas antigas ("ancient"), grupo de amigos no enredo (group) e um contexto sobrevivência (surviv), tende a ter avaliações ruins. Por fim, calculemos o risco e seu intervalo de confiança:
 ```{r}
 # matriz de preditores
 x_test_sparse = sparseMatrix(i = x_test$i, j = x_test$j, x = x_test$v,
@@ -403,15 +419,15 @@ s = cv.lasso$lambda.min,
 newx = x_test_sparse)
 
 # calculando as medidas de validacao
-medidas = data.frame(
+medidas_lasso = data.frame(
   risco_lasso = 1/length(y_test)*(sum(abs(pred.lasso - y_test)))
 )
 
 errors = std_error(MAE, pred.lasso, y_test)
 # calculando erro padrao para cada metodo
-medidas$IC_lower = medidas$risco_lasso - errors
-medidas$IC_upper = medidas$risco_lasso + errors
-medidas
+medidas_lasso$IC_lower = medidas_lasso$risco_lasso - errors
+medidas_lasso$IC_upper = medidas_lasso$risco_lasso + errors
+medidas_lasso
 ```
 Percebe-se uma certa reduzida no risco do lasso em comparação ao do KNN, com seu intervalo de confiança também reduzido. \
 **Item d:** \
@@ -433,19 +449,18 @@ preds_rf = rf_texto %>%
 
 ```{r}
 # calculando as medidas de validacao
-medidas = data.frame(
+medidas_rf = data.frame(
   risco_random_forest = 1/length(y_test)*(sum(abs(preds_rf$predictions - y_test)))
 )
  
 errors = std_error(MAE, preds_rf$predictions, y_test)
 
 # calculando erro padrao para cada metodo
-medidas$IC_lower = medidas$risco_random_forest - errors
-medidas$IC_upper = medidas$risco_random_forest + errors
-medidas
+medidas_rf$IC_lower = medidas_rf$risco_random_forest - errors
+medidas_rf$IC_upper = medidas_rf$risco_random_forest + errors
+medidas_rf
 ```
-Notamos ainda uma redução no risco em comparação ao modelo linear com regularização lasso. Podemos analisar a importancias das variáveis como segue:
- 
+Notamos ainda uma redução no risco em comparação ao KNN, tendo porém a regularização lasso com menor risco ainda. Podemos analisar a importancias das variáveis como segue:
 ```{r}
 import = tibble(variable = names(ranger::importance(rf_texto)),
                 importance = ranger::importance(rf_texto)) %>%
@@ -465,9 +480,9 @@ import %>% top_n(n = 25) %>%
         plot.title = element_text(hjust = 0.5))+
   scale_fill_gradient(low = "firebrick2", high = "dodgerblue3")
 ```
-Percebemos algumas semelhanças e diferenças entre a importância de variável captada pela floresta aleatória em comparação ao modelo de regressão com lasso, tendo os termos "plot", "film", "world" e "movi" como importantes tanto para o lasso quanto o random forest. Porém, os termos "despit", "friendship" e "director" que são tidos como relativamente importantes pelo lasso não são tão importantes no modelo de arvores aleatórias, e termos que são importantes pela árvore aleatória como "stori" e "seri" não tão importantes. Mas, em suma, as principais variáveis importantes são condizentes. 
+Percebemos algumas semelhanças e diferenças entre a importância de variável captada pela floresta aleatória em comparação ao modelo de regressão com lasso, tendo os termos "war"e "group" como importantes tanto para o lasso quanto o random forest. Porém, os termos "stori", "life", "group" e "find" que são tidos como relativamente importantes pela floresta aleatoria não são tão importantes no modelo linear com lasso, e termos que são importantes para o lasso como "ancient" e "creatur", "despit" e "friendship", não são tão importantes para a floresta aleatória. Em suma, "war" e "group" são as principais palavras em comum em termos de importância para os dois modelos, enquanto muitas palavras que são importantes para a floresta aleatória nem sequer são mostradas no gráfico de coeficientes do lasso, como é o caso de "young", "find", "film", e vice e versa. \
 **item (e):** \
-Podemos em seguida utilizar uma validação cruzada para escolher o melhor número de iteração $B$ para o Xgboost, fixando um early stopping de $20$, uma taxa de aprendizado $\lambda = 0.01$, e uma profundidade 6 de árvore:
+Podemos em seguida utilizar uma validação cruzada (k-fold) para escolher o melhor número de iteração $B$ para o Xgboost, fixando um early stopping de $20$, uma taxa de aprendizado $\lambda = 0.01$, e uma profundidade 6 de árvore:
 ```{r}
 set.seed(1500)
 library(xgboost)
@@ -484,7 +499,7 @@ Obtendo-se como melhor iteração:
 ```{r}
 xgb_cv$best_iteration
 ```
-Tendo a raiz quadrada do erro quadrático médio por iteração com seu erro padrão associado:
+Tendo a raiz quadrada do erro quadrático médio por iteração com seu erro padrão associado (estimado pelo k-fold):
 ```{r}
 historico = xgb_cv$evaluation_log
 historico %>%
@@ -501,7 +516,7 @@ historico %>%
                             family ="serif"),
         plot.title = element_text(hjust = 0.5))
 ```
-Notamos que de fato, a partir da iteração 400, não houve muita redução do risco. Assim 502 iterações é mais que o suficiente para obter um bom ajuste. Assim, com $\lambda = 0.01$ e $B = 502$, mantendo ainda um early stopping de 20 iterações, obtemos o ajuste por xgboost com uma profundidade de árvore 6:
+Notamos que de fato, a partir da iteração 400, não houve muita redução do risco. Assim 699 iterações é mais que o suficiente para obter um bom ajuste. Assim, com $\lambda = 0.01$ e $B = 699$, mantendo ainda um early stopping de 20 iterações, obtemos o ajuste por xgboost com uma profundidade de árvore 6:
 ```{r}
 xgb_texto = xgboost(data = x_train_sparse,
                     label = y_train,
@@ -517,18 +532,18 @@ preds_xgb = xgb_texto %>%
 ```
 ```{r}
 # calculando as medidas de validacao
-medidas = data.frame(
+medidas_xgb = data.frame(
   risco_xgb = 1/length(y_test)*(sum(abs(preds_xgb - y_test)))
 )
  
 errors = std_error(MAE, preds_xgb, y_test)
 
 # calculando erro padrao para cada metodo
-medidas$IC_lower = medidas$risco_xgb - errors
-medidas$IC_upper = medidas$risco_xgb + errors
-medidas
+medidas_xgb$IC_lower = medidas_xgb$risco_xgb - errors
+medidas_xgb$IC_upper = medidas_xgb$risco_xgb + errors
+medidas_xgb
 ```
-Observa-se um risco maior que o da floresta aleatória, e um intervalo de confiança com limites mais amplos. Assim, a floresta aleatória segue sendo o modelo com melhor perfomance dentre os demais. Por fim, podemos obter a importância de variaveis para as 25 variáveis mais importantes:
+Observa-se um risco um pouquinho maior que o da floresta aleatória, e um intervalo de confiança com limites também um pouco mais amplos. Assim, o lasso segue sendo o modelo com melhor perfomance dentre os demais. Por fim, podemos obter a importância de variaveis para as 25 variáveis mais importantes:
 ```{r}
 mat_imp = xgb.importance(feature_names = colnames(x_train),model = xgb_texto)
 
@@ -547,7 +562,7 @@ mat_imp %>% top_n(n = 25) %>%
         plot.title = element_text(hjust = 0.5))+
   scale_fill_gradient(low = "firebrick2", high = "dodgerblue3")
 ```
-Notamos grande similaridade da distribuição de importância para o Xgboost em comparação ao florestas aleatórias, com as 5 variáveis mais importantes sendo as mesmas: "plot", "film", "movi", "world" e "final", tal que "plot" é a variável com maior importância disparada. Assim, mantém-se os mesmos comentários feitos na comparação entre a importância de variáveis associada a floresta aleatória e para o modelo de regressão lasso, ou seja, apesar de certas diferenças, as principais variáveis mais importantes são as mesmas. \
+Notamos grande similaridade da distribuição de importância para o Xgboost em comparação ao florestas aleatórias, com as 5 variáveis mais importantes sendo as mesmas: "stori, "life", "group", e "find", tal que "stori" é a variável com maior importância disparada, com a maior diferença se dando pela palavra "war" não ser tão importante para o boosting. Assim, mantém-se os mesmos comentários feitos na comparação entre a importância de variáveis associada a floresta aleatória e para o modelo de regressão lasso, ou seja, apesar de certas diferenças, as principais variáveis mais importantes são as mesmas. \
 **item (f):** \
 Inicialmente podemos ajustar uma rede neural feedforward com 3 camadas,com 64, 32 e 16 neurônios respectivamente, todas com função de ativação Relu, tomando um total de 1000 épocas com early stopping de 20 iterações, um tamanho de batch fixado de 32 (default do keras) e uma taxa de aprendizado de 0.005 no otimizador \textit{adam}:
 ```{r}
@@ -592,25 +607,25 @@ plot(ajuste_nn, metrics = "loss")+
   scale_colour_brewer(palette = "Set1")+
   ylim(0, 12)
 ```
-Verifica-se uma diminuição rápida do risco no conjunto de treinamento e uma diminuição gradativa no conjunto de teste, havendo um early stopping antes da 200ª época. Caso chequemos o desempenho da rede neural no conjunto de teste, obtemos o risco e seu intervalo de confiança:
+Verifica-se uma diminuição rápida do risco no conjunto de treinamento e validação, havendo um early stopping antes da 200ª época. Caso chequemos o desempenho da rede neural no conjunto de teste, obtemos o risco e seu intervalo de confiança:
 ```{r}
 preds_nn = nn_texto %>%
   predict(scale(as.matrix(x_test)))
 ```
 ```{r}
 # calculando as medidas de validacao
-medidas = data.frame(
+medidas_nn = data.frame(
   risco_nn = 1/length(y_test)*(sum(abs(as.numeric(preds_nn) - y_test)))
 )
  
 errors = std_error(MAE, as.numeric(preds_nn), y_test)
 
 # calculando erro padrao para cada metodo
-medidas$IC_lower = medidas$risco_nn - errors
-medidas$IC_upper = medidas$risco_nn + errors
-medidas
+medidas_nn$IC_lower = medidas_nn$risco_nn - errors
+medidas_nn$IC_upper = medidas_nn$risco_nn + errors
+medidas_nn
 ```
-Verifica-se um elevado risco para essa rede neural juntamente com um intervalo de confiança amplo, tendo ainda o modelo de floresta aleatória como o melhor. Podemos adicionar um dropout para cada camada com certa porcentagem cada, tendo um dropout de 50% na primeira, 40% na segunda e 30% na ultima camada:
+Verifica-se um elevado risco para essa rede neural juntamente com um intervalo de confiança amplo, tendo ainda o modelo lasso como o melhor. Podemos adicionar um dropout para cada camada com certa porcentagem cada, tendo um dropout de 50% na primeira, 40% na segunda e 30% na ultima camada:
 ```{r}
 # repetindo mesmo procedimento mas adicionando dropout
 # arquitetura da rede neural feed forward
@@ -659,24 +674,24 @@ plot(ajuste_nn_drop, metrics = "loss")+
 ```
 Percebe-se uma considerável melhora no desempenho do conjunto de validação, com uma grande redução da curva de risco, apesar de o conjunto de treino ter uma piora no desempenho. Além disso, atingiu-se a 200ª época antes do early stopping com uma relativa estabilidade nos riscos. Espera-se assim, que o risco para o conjunto de teste seja relativamente menor em comparação a rede neural sem dropout: 
 ```{r}
-preds_nn = nn_texto_drop %>%
+preds_nn_drop = nn_texto_drop %>%
   predict(scale(as.matrix(x_test)))
 ```
 ```{r}
 # calculando as medidas de validacao
-medidas = data.frame(
-  risco_nn = 1/length(y_test)*(sum(abs(as.numeric(preds_nn) - y_test)))
+medidas_nn_drop = data.frame(
+  risco_nn = 1/length(y_test)*(sum(abs(as.numeric(preds_nn_drop) - y_test)))
 )
  
-errors = std_error(MAE, as.numeric(preds_nn), y_test)
+errors = std_error(MAE, as.numeric(preds_nn_drop), y_test)
 
 # calculando erro padrao para cada metodo
-medidas$IC_lower = medidas$risco_nn - errors
-medidas$IC_upper = medidas$risco_nn + errors
-medidas
+medidas_nn_drop$IC_lower = medidas_nn_drop$risco_nn - errors
+medidas_nn_drop$IC_upper = medidas_nn_drop$risco_nn + errors
+medidas_nn_drop
 ```
 Percebe-se uma grande diminuida do risco da rede neural ao se utilizar dropout para cada camada da rede, tendo porém um risco maior que a floresta aleatória. Assim, obtém-se grandes melhoras no desempenho da rede neural definida ao se utilizar dropout em cada camada. \
-**item (g)**
+**item (g):** \
 Por fim, podemos ajustar uma kernel ridge regression com um kernel gaussiano, fixando $\lambda = 0.5$ e algum valor bom para a largura de banda $h$. Para tal, podemos implementar o kernel ridge regression com kernel gaussiano e através de uma pequena validação cruzada em um subconjunto do conjunto de treinamento total determinar um valor bom para $h$, realizando dessa forma um pequno tuning: 
 ```{r}
 # implementando primeiro a matriz de gram
@@ -751,27 +766,27 @@ preds_krr = pred_krr(alpha_krr, as.matrix(x_test), as.matrix(x_train), h = 4)
 ```
 ```{r}
 # calculando as medidas de validacao
-medidas = data.frame(
+medidas_krr = data.frame(
   risco_krr = 1/length(y_test)*(sum(abs(as.numeric(preds_krr) - y_test)))
 )
  
 errors = std_error(MAE, as.numeric(preds_krr), y_test)
 
 # calculando erro padrao para cada metodo
-medidas$IC_lower = medidas$risco_krr - errors
-medidas$IC_upper = medidas$risco_krr + errors
-medidas
+medidas_krr$IC_lower = medidas_krr$risco_krr - errors
+medidas_krr$IC_upper = medidas_krr$risco_krr + errors
+medidas_krr
 ```
-Vemos um ajuste melhor que o da floresta aleatória, com um intervalo de confiança também menor. Por fim, podemos plotar os valores preditos versus os observados para cada modelo como a seguir:
+Vemos um desempenho melhor que o modelo lasso, com um intervalo de confiança também menor, porém tudo a um custo computacional elevado. Por fim, podemos plotar os valores preditos versus os observados para cada modelo como a seguir:
 ```{r}
 # juntando todas as predicoes
 all_preds = data.frame(resp = rep(y_test, 6),
-                       preds = c(preds, as.numeric(pred.lasso), preds_rf$predictions,
-                                preds_xgb, as.numeric(preds_nn), preds_krr),
+                       preds = c(preds_knn, as.numeric(pred.lasso), preds_rf$predictions,
+                                preds_xgb, as.numeric(preds_nn_drop), preds_krr),
                        mods = c(rep("KNN", length(y_test)), rep("Lasso", length(y_test)),
                                 rep("Floresta aleatórias", length(y_test)),
                                 rep("Xgboost", length(y_test)),
-                                rep("Rede neural", length(y_test)),
+                                rep("NN com dropout", length(y_test)),
                                 rep("KRR", length(y_test))))
 
 all_preds %>%
@@ -779,9 +794,41 @@ all_preds %>%
   geom_point(color = "#0073C2FF", alpha = 0.55)+
   geom_abline(intercept = 0, slope = 1, colour = "red", linetype = "dashed") +
   xlim(min(all_preds$preds), max(all_preds$preds)) +
+  labs(y = "Nota do filme",
+       x = "Predições")+
+  theme(text = element_text(size = 11, 
+                            family ="serif"),
+        plot.title = element_text(hjust = 0.5))+
   facet_wrap(~mods)
 ```
+Vemos que cada modelo tem a predição geralmente entre as notas 5 e 7, com o lasso e KRR seguindo mais a linearidade  da reta identidade, enquanto o restante dos modelos se dispersam apenas em torno de tal reta, com predições entre 5 e 7, formando um tipo de glóbulo. Ou seja, os modelos parecem não predizer tão bem as notas dos filmes, podendo ser interessante adicionar outras covariáveis que deem informações adicionais sobre cada filme, como a contagem de votos e a linguagem do filme. \
+**item (i):** \
+Para analisar a performance de cada modelo conjuntamente, podemos analisar a estimativa do risco e erros padrões de forma gráfica:
 ```{r}
-```
+# concatenando riscos e erros padrões
+all_medidas = mapply(c, medidas_knn, medidas_lasso, medidas_rf,
+                    medidas_xgb, medidas_nn, medidas_nn_drop,
+                    medidas_krr)
 
+# transformando para data frame
+all_medidas %<>% as.data.frame()
+# nomes de cada modelo
+all_medidas$names = as.factor(c("KNN", "Lasso", "RF", "Xgb", "NN", "NN_dropout", "KRR"))
+colnames(all_medidas)[1] = "risco"
+
+# plotando
+all_medidas %>%
+  mutate(names = fct_reorder(names, risco, .desc = F)) %>%
+  ggplot(aes(x = names, y = risco))+
+  geom_point() +
+  geom_errorbar(aes(ymin = IC_lower, ymax = IC_upper)) +
+  labs(y = "Risco",
+       x = "Modelos",
+       title = "Riscos estimados e intervalos de confiança para cada modelo")+
+  theme_minimal()+
+  theme(text = element_text(size = 11, 
+                            family ="serif"),
+        plot.title = element_text(hjust = 0.5))
+```
+Vemos pelo gráfico acima que em geral, os modelos de kernel ridge regressio, lasso e floresta aleatória tem desempenho muito similar, apesar de existir certa diferença, com o KRR melhor que o Lasso e o Lasso melhor que a floresta aleatória. Vemos porém que para o Xgboost há certa piora de desempenho em comparação a esses outros 3, seguido pelo KNN, com as redes neurais (com e sem dropout) possuindo os piores desempenhos entre todos os modelos. Assim, por fim, podemos escolher como melhor modelo, o modelo lasso, por ter um desempenho quase igual ao KRR e nao ser tão custoso quanto ou ter tantos tuning parameters, sendo ao mesmo tempo muito interpretavel em comparação tanto ao KRR quanto ao random forest.
 

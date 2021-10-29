@@ -342,11 +342,11 @@ medidas_knn = data.frame(
   risco_knn = 1/length(y_test)*(sum(abs(preds_knn - y_test))))
 
 std_error = function(loss_func, preds, y){
-  SD = sqrt((1/length(y))*mean((abs(preds_knn - y) - (loss_func(preds_knn, y)))^2))
+  SD = sqrt((1/length(y))*mean((abs(preds - y) - (loss_func(preds, y)))^2))
   return(2*SD) 
 }
 
-errors = c(std_error(MAE, preds, y_test))
+errors = c(std_error(MAE, preds_knn, y_test))
 # calculando erro padrao para cada metodo
 medidas_knn$IC_lower = medidas_knn$risco_knn - errors
 medidas_knn$IC_upper = medidas_knn$risco_knn + errors

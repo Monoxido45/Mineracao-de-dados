@@ -1,0 +1,208 @@
+---
+title: "Lista 3 - Mineração de dados"
+author: "Luben, Luiz Piccin, Vinicius Hideki"
+date: "29/10/2021"
+header-includes:
+  - \usepackage{amsmath}
+  - \usepackage{xcolor}
+output: 
+  pdf_document:
+    fig_caption: yes
+    df_print: kable
+latex_engine: texlive
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = T, out.width = '85%', fig.align = "center")
+```
+```{r message = FALSE, include = FALSE}
+# importando os pacotes de interesse
+library(ggplot2)
+library(ggthemes)
+library(ggpubr)
+library(GGally)
+library(ggcorrplot)
+library(reshape2)
+library(tidyverse)
+library(magrittr)
+
+
+# pacotes do lasso, ridge, elastic net, validação e tidyverse
+library(glmnet)
+library(caret)
+library(tidyverse)
+library(magrittr)
+
+# usando o tidymodels
+library(tidymodels)
+```
+# Exercício 1: \
+Importando o banco de dados sobre fala:
+```{r}
+voices_df = read.csv("/home/kuben/estatistica_UFSCAR/Mineracao de dados/listas/lista_3/voice.csv")
+
+voices_df %>%
+  mutate(label = as.factor(label)) %>%
+  head()
+```
+Ressalta-se que todas as covariveis desse banco de dados são continuas, tendo as seguintes frequências para cada sexo:
+```{r}
+voices_df %>%
+  ggplot(aes(x = label, fill = label)) +
+  geom_bar()+
+  labs(x = "Sexo",
+       y = "Frequência",
+       title = "Frequência de cada sexo",
+       colour = "Sexo")+
+  theme(text = element_text(size = 12, 
+                            family ="serif"),
+        plot.title = element_text(hjust = 0.5))+
+  scale_fill_brewer(palette = "Set1")
+```
+Vemos praticamente um número igual de pessoas do sexo feminino e masculino, tendo 1584 individuos de cada sexo. Assim, antes de ajustarmos os diferentes modelos, separamos o conjunto em treinamento e teste. Como temos um número reduzido de observações, utilizaremos 35% do banco de dados para teste (ou seja, cerca de 1109 observações) e 65% para treinamento. Utilizando o pacote \textit{caret}, obtemos:
+```{r}
+library(caret)
+# semente para separar
+set.seed(750, sample.kind="Rounding")
+trainIndex = createDataPartition(voices_df$label, p = 0.65)$Resample1
+voices_train = voices_df[trainIndex, ]
+voices_test = voices_df[-trainIndex, ]
+
+label_train = voices_train$label
+label_test = voices_test$label
+
+# checando o balanço das classes no conjunto de treinamento
+print(table(voices_train$label))
+```
+Assim, com base nesse data-splitting, ajustamos e averiguamos o desempenho dos seguintes modelos: \
+**Árvore de decisão: ** \
+Primeiramente ajustamos uma árvore de decisão utilizando o indice gini como critério para definir a pureza de cada partição, tendo a árvore sem poda: 
+```{r}
+# pacote
+library(rpart)
+# ajuste da arvore sem poda ainda
+fit <- rpart(label ~ .,
+method = "class", data = voices_train)
+
+# plotando a arvore nao podada
+library(rpart.plot)
+rpart.plot(fit)
+```
+Nota-se uma árvore relativamente consisa que talve não necessite de poda, com uma aparente boa divisão das classes, tal que os nós folhas são quase homogêneos, com o primeiro tendo 0.99 mulheres, o segundo 0.90, o terceiro 0.2 e o último 0.04. Ou sejá, cada nó folha parece estar relativamente puro. Nota-se também que a covariável meanfun aparece duas vezes no gráfico, sendo um grande diferencial na classificação da voz como provinda de um homem ou mulher. Podando essa árvore obtém-se:
+```{r}
+# poda:
+melhor_cp <- fit$cptable[which.min(fit$cptable[, "xerror"]),
+"CP"]
+pfit <- rpart::prune(fit, cp = melhor_cp)
+# plotar árvore podada
+rpart.plot(pfit)
+```
+Ou seja, observa-se novamente a mesma árvore, sem diferença alguma, não havendo necessidade de poda ao final. Para esse caso, tomando-se a perda 0-1, adotamos o risco $R(g) = P (Y \neq g(\boldsymbol{X}))$ e computamos também o erro médio, tendo:
+```{r}
+pred_tree = predict(pfit, voices_test,
+                    type = "class")
+
+probs_tree = predict(pfit, voices_test,
+                    type = "prob")
+medidas_tree = data.frame(
+  risco = mean(pred_tree != label_test))
+
+std_error = function(preds, probs_preds, y){
+  probs = ifelse(y == "female", probs_preds[, "male"],
+       probs_preds[, "female"])
+  SD = sqrt((1/length(y))*mean((probs - (mean(preds != y)))^2))
+  return(2*SD) 
+}
+
+errors = c(std_error(pred_tree, probs_tree, label_test))
+# calculando erro padrao para cada metodo
+medidas_tree$IC_lower = medidas_tree$risco - errors
+medidas_tree$IC_upper = medidas_tree$risco + errors
+medidas_tree
+```
+Observamos um risco relativamente pequeno com um intervalo de confiança também pouco diperso, com limite inferior 0.03 e superior 0.052, tendo um ajuste razoavelmente adequado.
+\
+**Regressão logística:** \
+Ajustando uma regressão logística sem penalização
+```{r}
+# mlg ajustado
+Sys.setenv("_R_USE_PIPEBIND_" = TRUE)
+# trocando female por 1 e male por 0
+logis_mod = voices_train %>%
+  mutate(label = ifelse(label == "female", 1, 0)) |> d => 
+   glm(label ~ ., data = d, family = binomial)
+```
+Tendo os coeficientes para cada covariável:
+```{r}
+coef(logis_mod)
+```
+Percebe-se a presença de ao menos 3 NA's que podem se dever a certa colinearidade entre algumas variaveis. Para resolver tal problema, pode-se utilizar a regularização lasso, que filtra melhor as covariaveis presentes na matriz de covariáveis, evitando que esse tipo de coisa aconteça:
+```{r}
+set.seed(12650, sample.kind="Rounding")
+x_train = voices_train[, -21] %>% as.matrix()
+y_train_logis = ifelse(label_train == "female", 1, 0)
+cv.lasso = cv.glmnet(x_train, y_train_logis,
+alpha = 1, family = "binomial")
+```
+```{r}
+cv.lasso$lambda.min
+cv.lasso$lambda.1se
+```
+Ou seja, obtemos que o $\lambda$ que minimiza o desvio da binomial é de 0.00082, enquanto que o $\lambda$ que mais penaliza ainda mantendo um desvio binomial baixo é de 0.00579. O comportamento de $\lambda$ é descrito pelo gráfico abaixo:
+```{r}
+plot(cv.lasso)
+```
+Observa-se que o $\lambda$ que minimiza o desvio binomial filtra 10 covariáveis das 20 originalmente inclusas na matriz de covariáveis, evitando dessa maneira possíveis colinearidades e redundâncias entre as variáveis. Com tal redução, podemos analisar melhor o valor de cada coeficiente:
+```{r}
+mod_lasso = glmnet(x_train, y_train_logis, alpha = 1, lambda = cv.lasso$lambda.min,
+                   family = binomial())
+coefs_data = data.frame(coefs = coef(mod_lasso)[-1],
+                        names = as.factor(row.names(coef(mod_lasso))[-1]))
+coefs_data %>%
+  filter(coefs != 0) %>%
+  mutate(names = fct_reorder(names, coefs, .desc = F)) %>%
+  ggplot(aes(x = names, y = coefs))+
+  geom_bar(stat = "identity", fill = "darkred")+
+  labs(title = "Coeficientes do modelo logístico com regularização lasso",
+       x = "Coeficientes",
+       y = "Valores dos coeficientes")+
+  coord_flip()+
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        text = element_text(size = 12, 
+                            family ="serif"),
+        plot.title = element_text(hjust = 0.5))
+```
+Percebemos um altíssimo valor para meanfun em comparação as demais variáveis, lembrando que essa mesma covariável também teve grande importância na arvore de decisão, aparecendo duas vezes na representação gráfica desta. Destaca-se também a covariável IQR, com o menor valor de coefieciente, sendo a segunda mai importante variável para esse modelo. Estimasse por fim o risco e o intervalo de confiança:
+```{r}
+x_test = voices_test[, -21] %>% as.matrix()
+y_test_logis = ifelse(label_test == "female", 1, 0)
+
+probs_lasso = predict(mod_lasso, newx = x_test,
+                    type = "response")
+
+pred_lasso = ifelse(probs_lasso <= 0.5, 0, 1)
+
+medidas_lasso = data.frame(
+  risco = mean(pred_lasso != y_test_logis))
+
+std_error = function(preds, probs_preds, y){
+  probs = ifelse(y == 1, 1 - probs_preds, probs_preds)
+  SD = sqrt((1/length(y))*mean((probs - (mean(preds != y)))^2))
+  return(2*SD) 
+}
+
+errors = c(std_error(pred_lasso, probs_lasso, y_test_logis))
+# calculando erro padrao para cada metodo
+medidas_lasso$IC_lower = medidas_lasso$risco - errors
+medidas_lasso$IC_upper = medidas_lasso$risco + errors
+medidas_lasso
+```
+Obtém-se um risco e intervalo de confiança ainda menor que o da árvore de decisão, obtendo-se uma melhora considerável na acurácia do modelo. \
+**Naive Bayes:**
+
+
+
+
+
+
+

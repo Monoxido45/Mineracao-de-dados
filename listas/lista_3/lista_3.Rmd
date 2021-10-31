@@ -40,9 +40,8 @@ Importando o banco de dados sobre fala:
 ```{r}
 voices_df = read.csv("/home/kuben/estatistica_UFSCAR/Mineracao de dados/listas/lista_3/voice.csv")
 
-voices_df %>%
-  mutate(label = as.factor(label)) %>%
-  head()
+voices_df %<>%
+  mutate(label = as.factor(label))
 ```
 Ressalta-se que todas as covariveis desse banco de dados são continuas, tendo as seguintes frequências para cada sexo:
 ```{r}
@@ -52,7 +51,7 @@ voices_df %>%
   labs(x = "Sexo",
        y = "Frequência",
        title = "Frequência de cada sexo",
-       colour = "Sexo")+
+       fill = "Sexo")+
   theme(text = element_text(size = 12, 
                             family ="serif"),
         plot.title = element_text(hjust = 0.5))+
@@ -198,7 +197,301 @@ medidas_lasso$IC_upper = medidas_lasso$risco + errors
 medidas_lasso
 ```
 Obtém-se um risco e intervalo de confiança ainda menor que o da árvore de decisão, obtendo-se uma melhora considerável na acurácia do modelo. \
-**Naive Bayes:**
+**Naive Bayes:** \
+Como todas as covariáveiss são continuas, podemos assumir que $X_{ij}|Y_i = s \sim \text{Normal}(\mu_{j, s}, \sigma^2_{j,s})$ de forma iid para cada observação $i$, estimando  $\mu_{j, s}$ e $\sigma^2_{j, s}$ por máxima verossimilhança. Fazendo-se isso, obtemos o estimador por naive bayes da probabilidade $\mathbb{P}(Y_i = 0|\boldsymbol{x}_i))$ para cada $i$-ésima observação:
+$$
+\begin{aligned}
+\hat{P}(Y_i = 0| \boldsymbol{x}_i) &= \frac{\hat{f}(\boldsymbol{x_i}|Y_i = 0) \hat{P}(Y_i = 0)}{
+\sum_{k = 0}^{1} \hat{f}(\boldsymbol{x_{i}}|Y = k) \hat{P}(Y_i = k)
+} \\
+&= \frac{\prod_{j = 1}^{p} \hat{f}(x_{ij}| Y_i = 0) \hat{P}(Y_i = 0)}{
+\sum_{k = 0}^{1} \prod_{j = 1}^{p}\hat{f}(x_{ij}|Y_i = k) \hat{P}(Y_i = k)
+} 
+\end{aligned}
+$$
+Tendo como predição:
+$$
+\begin{aligned}
+g(\boldsymbol{x}_i) = \underset{c \in \{0,1\}}{\arg \max} \hat{P}(Y_i = c| \boldsymbol{x}_i) = 
+\end{aligned}
+$$
+Assim, usando o pacote e
+```{r}
+library(e1071)
+NB_mod =naiveBayes(label ~ ., data = voices_train)
+print(NB_mod)
+```
+Vemos acima a probabilidades condicionais do rótulo com relação a cada variável trabalhada, obtendo-se o risco e seu intervalo de confiança:
+```{r}
+NB_pred = predict(NB_mod, voices_test, type = "class")
+NB_prob = predict(NB_mod, voices_test, type = "raw")
+
+
+medidas_NB = data.frame(
+  risco = mean(NB_pred != label_test))
+
+std_error = function(preds, probs_preds, y){
+  probs = ifelse(y == "female", 1 - probs_preds, probs_preds)
+  SD = sqrt((1/length(y))*mean((probs - (mean(preds != y)))^2))
+  return(2*SD) 
+}
+
+errors = c(std_error(NB_pred, NB_prob, label_test))
+# calculando erro padrao para cada metodo
+medidas_NB$IC_lower = medidas_NB$risco - errors
+medidas_NB$IC_upper = medidas_NB$risco + errors
+medidas_NB
+```
+Obtemos um risco pior que todos os classificadores vistos até agora, com um intervalo também mais amplo. Salienta-se que a suposição de independência entre as covariáveis não é muito razoávelm, visto que para a regressão logística sem penalização houve problema de divergência em certos coeficientes devido a uma colinearidade já existente entre as covariáveis utilizadas. Assim, por tais motivos, o Naive Bayes é um classificador não muito bom para esse problema. \
+**KNN:** \
+O KNN tem um funcionamento trivial no contexto de classificação, porém é importante antes encontrar um valor de $k$ bom a partir de um tuning por data splitting, divindo o conjunto de treinamento em 70% treino e 30% validação, tendo:
+```{r}
+library(FNN)
+n_valid = 618
+valid = sample(1:nrow(voices_train), n_valid, replace = F)
+voices_train_valid = voices_train[-valid, ]
+voices_valid = voices_train[valid, ]
+x_train_valid = voices_train_valid[, -21] %>%
+  as.matrix()
+x_valid = voices_valid[, -21] %>%
+  as.matrix()
+k_s = 1:100
+riscos = numeric(length(k_s))
+for(i in 1:length(k)){
+ knn_valid = knn(train = x_train_valid, test = x_valid, 
+                 cl = voices_train_valid$label,
+                 k = k_s[i], prob = T)
+ if(is.factor(knn_valid) == T){preds = knn_valid}else{
+   preds = knn_valid$pred
+ }
+ riscos[i] = mean(preds != voices_valid$label)
+}
+```
+```{r}
+data.frame(k = k_s,
+           risco = riscos) %>%
+  ggplot(aes(x = k, y = risco)) +
+  geom_point(color = "#0073C2FF", alpha = 0.75) +
+  geom_line(color = "#0073C2FF",size = 1)+
+  theme_bw()+
+  labs(x = "k",
+       y = "Risco na classificação",
+       title = "Risco de acordo com a escolha de k")+
+  theme(text = element_text(size = 11, 
+                            family ="serif"),
+        plot.title = element_text(hjust = 0.5))
+```
+Vemos que a partir de $k = 50$, o risco praticamente cai para $0$, podemos assim tomar $k = 51$ ou $50$, tendo a predição e o intervalo de confiança:
+```{r}
+KNN_mod = knn(train = x_train, test = x_test, 
+                 cl = voices_train$label,
+                 k = 51, prob = T)
+KNN_pred = KNN_mod
+KNN_prob = ifelse(KNN_pred == "male", 1 - attr(KNN_pred, "prob"),
+                  attr(KNN_pred, "prob"))
+
+medidas_KNN = data.frame(
+  risco = mean(KNN_pred != label_test))
+
+std_error = function(preds, probs_preds, y){
+  probs = ifelse(y == "female", 1 - probs_preds, probs_preds)
+  SD = sqrt((1/length(y))*mean((probs - (mean(preds != y)))^2))
+  return(2*SD) 
+}
+
+errors = c(std_error(KNN_pred, KNN_prob, label_test))
+# calculando erro padrao para cada metodo
+medidas_KNN$IC_lower = medidas_KNN$risco - errors
+medidas_KNN$IC_upper = medidas_KNN$risco + errors
+medidas_KNN
+```
+Obtemos um desempenho muito ruim no KNN, errando praticamente 31% das observações, tendo também o intervalo de confiança mais amplo dentre os demais modelos. \
+**Floresta aleatória:** \
+```{r}
+library(ranger)
+
+# usando o indice gini
+RF_mod = ranger(label ~ ., data = voices_train,
+num.trees = 500,
+importance = "impurity",
+write.forest = TRUE,
+verbose = FALSE,
+probability = T)
+
+RF_prob = predict(RF_mod,
+data = voices_test, type = "response")$prediction[, "female"]
+RF_pred = as.factor(ifelse(RF_probs < 0.5, "male", "female"))
+
+medidas_RF = data.frame(
+  risco = mean(RF_pred != label_test))
+
+std_error = function(preds, probs_preds, y){
+  probs = ifelse(y == "female", 1 - probs_preds, probs_preds)
+  SD = sqrt((1/length(y))*mean((probs - (mean(preds != y)))^2))
+  return(2*SD) 
+}
+
+errors = c(std_error(RF_pred, RF_prob, label_test))
+# calculando erro padrao para cada metodo
+medidas_RF$IC_lower = medidas_RF$risco - errors
+medidas_RF$IC_upper = medidas_RF$risco + errors
+medidas_RF
+```
+Obtemos pela floresta aleatória o melhor risco estimado, um pouco menor que o risco associado ao modelo logístico penalizado por lasso. Podemos também analisar a importância de variáveis, tendo:
+```{r}
+import = tibble(variable = names(ranger::importance(RF_mod)),
+                importance = ranger::importance(RF_mod)) %>%
+  arrange(desc(importance))
+import %>%
+  ggplot(aes(x = reorder(variable, importance),
+            y = importance, fill = importance))+
+  geom_bar(stat = "identity", position = "dodge") + coord_flip()+
+  labs(y = "Importância de variável",
+       x = "",
+       title = "Sumário da importâncias de variáveis",
+       fill = "Importância")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        text = element_text(size = 12, 
+                            family ="serif"),
+        plot.title = element_text(hjust = 0.5))+
+  scale_fill_gradient(low = "firebrick2", high = "dodgerblue3")
+```
+Vemos que as variáveis meanfun, IQR e Q25 são de longe as variáveis mais importantes, o que é correspondente às importancias analisadas pelo lasso. Assim, dados os riscos estimados, vemos que a floresta aleatória é o melhor classificador, tendo o menor risco estimado e o menor intervalo de confiança. O lasso também é um modelo bom, tendo inclusive mais interpretabilidade que a própria floresta aleatória. Por fim, podemos plotar as curvas ROC para cada modelo:
+```{r message = F, warning = F, }
+library(pROC)
+
+# curvas ROC para todos os modelos feitos
+roc_NB = roc(label_test, NB_prob[, "female"])
+roc_mv = roc(label_test, probs_lasso)
+roc_rf = roc(label_test, RF_probs)
+roc_dt = roc(label_test, probs_tree[, "female"])
+roc_KNN = roc(label_test, KNN_prob)
+
+
+rocs = list("Arvore de decisão" = roc_dt, "Lasso" = roc_mv,
+            "Naive Bayes" = roc_NB, "KNN" = roc_KNN,"Floresta aleatória" = roc_rf)
+```
+```{r}
+# grafico da curva ROC
+ggroc(rocs, legacy.axes = T) +
+  labs(x = "1 - Especificidade",
+       y = "Sensibilidade",
+       title = "ROC para o conjunto de teste para todos os modelos",
+       colour = "Modelo")+
+  theme(text = element_text(size = 11, 
+                            family ="serif"),
+        plot.title = element_text(hjust = 0.5)) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "red")+
+  scale_colour_brewer(palette = "Set1")
+```
+Vemos que o KNN, tem um desempenho muito pior que os demais modelos, com uma curva ROC pŕoxima a reta identidade. Os demais modelos parecem ter um desempenho satisfatório, tendo floresta aleatória e o lasso com curvas muito próximas e muito semelhantes a curva ideal retangular, enquanto a arvore de decisão e naive bayes tem um desempenho mais distante da curva ideal mas ainda tem um ótimo desempenho. Podemos em seguida analisar as diferentes matrizes de confusão utilizando como ponto de corte 0.5: \
+**Floresta aleatória: \**
+```{r}
+preds = as.factor(ifelse(RF_prob < 0.5, "male", "female"))
+ref = as.factor(label_test)
+cm = caret::confusionMatrix(preds, reference = ref)
+
+# matriz de confusao
+cmtable_rf = cm$table
+cmtable_rf
+```
+Percebe-se um bom resultado pela matriz de confusão, tendo em geral pouquissimas instâncias má classificadas em masculino ou feminino. Mais especificamente, vemos um número maior de predições incorretas quando o sexo verdadeiro é o masculino. Isso pode ser analisado melhor pela sensibilidad e especificidade:
+```{r}
+# precisão e recall
+cm$byClass[c("Recall", "Specificity")]
+```
+Vemos que em geral o modelo é sensível e específico, tendo entre os pacientes homens, uma porcentagem de acerto menor comparada as pacientes mulheres. \
+**Lasso:** \
+```{r}
+preds = as.factor(ifelse(probs_lasso < 0.5, "male", "female"))
+ref = as.factor(label_test)
+cm = caret::confusionMatrix(preds, reference = ref)
+
+
+cmtable = cm$table
+cmtable
+```
+Novamente, temos bons resultados, mas notamos dessa vez, que há maiores erros na classificação no grupo feminino ao invés do masculino, tendo-se a especificidade e sensibilidade:
+```{r}
+# precisão e recall
+cm$byClass[c("Recall", "Specificity")]
+```
+Notando-se um decrescimento da sensibilidade e aumento da especifidade com relação ao modelo anterior. \
+**Árvore de decisão:** \
+```{r}
+preds = as.factor(ifelse(probs_tree[, "female"] < 0.5, "male", "female"))
+ref = as.factor(label_test)
+cm = caret::confusionMatrix(preds, reference = ref)
+
+
+cmtable = cm$table
+cmtable
+```
+Vemos em geral, um aumento do erro de classificação desse modelo, com novamente um número maior de mulheres mal classificadas pela sua voz em comparação a homens, com os scores:
+```{r}
+# precisão e recall
+cm$byClass[c("Recall", "Specificity")]
+```
+Vemos scores menores em comparação aos três modelos anteriores, com uma sensibilidade ainda menor comparada aos modelos anteriores. \
+**Naive Bayes:** \
+```{r}
+preds = as.factor(ifelse(NB_prob[, "female"] < 0.5, "male", "female"))
+ref = as.factor(label_test)
+cm = caret::confusionMatrix(preds, reference = ref)
+
+
+cmtable = cm$table
+cmtable
+```
+Dessa vez, vemos um maior número de homens mal classificados com voz feminina, tendo novamente um aumento nos erros de classificação. Os scores abaixo reforçam o observado na matriz de confusão
+```{r}
+# precisão e recall
+cm$byClass[c("Recall", "Specificity")]
+```
+**KNN:** \
+```{r}
+preds = as.factor(ifelse(KNN_prob < 0.5, "male", "female"))
+ref = as.factor(label_test)
+cm = caret::confusionMatrix(preds, reference = ref)
+
+
+cmtable = cm$table
+cmtable
+```
+O KNN em geral foi o pior modelo dentre os demais, tendo a maior quantidade de erros para ambos sexos, apesar de maiores erros para o sexo feminino. Podemos por fim, variar o ponto de corte para os dois melhores modelos (floresta aleatória e lasso), escolhendo aquele que maximiza sensibilidade e especificidade, tendo:
+```{r}
+thres_rf = coords(roc_rf, x = "best", input = "threshold", ret = "t", best.method = "youden")
+thres_lasso = coords(roc_mv, x = "best", input = "threshold", ret = "t", best.method = "youden")
+thres = data.frame(modelos = c("Floresta aleatória", "Lasso"),
+                   cortes = round(c(as.numeric(thres_rf), as.numeric(thres_lasso)), 4))
+thres
+```
+Obtemos um corte um pouco abaixo de 0.5, obtendo-se as matrizes de confusão: \
+**Floresta aleatória:**
+```{r}
+preds = as.factor(ifelse(RF_prob < thres[1, 2], "male", "female"))
+ref = as.factor(label_test)
+cm = caret::confusionMatrix(preds, reference = ref)
+
+# matriz de confusao
+cmtable_rf = cm$table
+cmtable_rf
+```
+Vemos uma relevante diminuida na quantidade de vozes femininas má classificadas como masculinas junto também porém com um aumento na quantidade de homens mal classificados. Ao somar as classificações corretas, vemos uma diferença de apenas 2 observações entre o limiar 0.4242 em comparação ao limiar 0.5, não havendo tanta mudança na performance do modelo. Para o lasso, temos:\
+**Lasso:**
+```{r}
+preds = as.factor(ifelse(probs_lasso < thres[2, 2], "male", "female"))
+ref = as.factor(label_test)
+cm = caret::confusionMatrix(preds, reference = ref)
+
+# matriz de confusao
+cmtable_rf = cm$table
+cmtable_rf
+```
+Vemos uma diferença semelhante àquela observada na floresta aleatória, tendo uma melhora na quantidade de mulheres bem classificadas, porém uma piora nos homens, com uma diferença de 4 observações bem classificadas do limiar 0.4113 em comparação ao limiar padrão 0.5.
+
+
 
 
 
